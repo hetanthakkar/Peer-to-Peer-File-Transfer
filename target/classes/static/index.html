@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>P2P Torrent Client</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/6.26.0/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+  <style>
+    .peer-card {
+      margin-bottom: 15px;
+    }
+    .bitfield-display {
+      font-family: monospace;
+      letter-spacing: 2px;
+      margin-top: 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .piece-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(20px, 1fr));
+      gap: 2px;
+      margin-top: 10px;
+    }
+    .piece {
+      height: 20px;
+      border-radius: 2px;
+    }
+    .piece-downloaded {
+      background-color: #28a745;
+    }
+    .piece-missing {
+      background-color: #dc3545;
+    }
+    .progress {
+      height: 20px;
+      margin-top: 5px;
+    }
+    .video-preview {
+      margin-top: 20px;
+      max-width: 100%;
+    }
+    #upload-progress {
+      display: none;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useRef } = React;
+    
+    function TorrentClient() {
+      const [peerId, setPeerId] = useState('');
+      const [peers, setPeers] = useState([]);
+      const [torrentStatus, setTorrentStatus] = useState(null);
+      const [uploadProgress, setUploadProgress] = useState(0);
+      const [connectedPeers, setConnectedPeers] = useState([]);
+      const [videoUrl, setVideoUrl] = useState('');
+      const fileInputRef = useRef(null);
+      
+      // Initialize peer
+      const initializePeer = async (id, hasFile = false) => {
+        try {
+          const response = await fetch(`/api/torrent/init/${id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              hasFile,
+              hostname: 'localhost',
+              port: 8000 + parseInt(id) % 1000
+            })
+          });
+          
+          if (response.ok) {
+            setPeerId(id);
+            refreshPeers();
+            alert(`Initialized as peer ${id}`);
+          } else {
+            alert('Failed to initialize peer');
+          }
+        } catch (err) {
+          console.error('Error initializing peer:', err);
+        }
+      };
+      
+      // Upload file
+      const uploadFile = async (event) => {
+        event.preventDefault();
+        
+        const fileInput = fileInputRef.current;
+        if (!fileInput.files[0]) {
+          alert('Please select a file');
+          return;
+        }
+        
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('peerId', peerId);
+        
+        try {
+          document.getElementById('upload-progress').style.display = 'block';
+          
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/files/upload', true);
+          
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const percentComplete = Math.round((e.loaded / e.total) * 100);
+              setUploadProgress(percentComplete);
+            }
+          };
+          
+          xhr.onload = () => {
+            if (xhr.status === 200) {
+              alert('File uploaded successfully');
+              refreshStatus();
+            } else {
+              alert('Upload failed');
+            }
+            document.getElementById('upload-progress').style.display = 'none';
+          };
+          
+          xhr.send(formData);
+        } catch (err) {
+          console.error('Error uploading file:', err);
+          document.getElementById('upload-progress').style.display = 'none';
+        }
+      };
+      
+      // Register peer
+      const registerPeer = async (event) => {
+        event.preventDefault();
+        const targetPeerId = document.getElementById('target-peer-id').value;
+        
+        if (!targetPeerId) {
+          alert('Please enter a peer ID');
+          return;
+        }
+        
+        try {
+          const response = await fetch('/api/torrent/peer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              peerId: targetPeerId,
+              hostname: 'localhost',
+              port: 8000 + parseInt(targetPeerId) % 1000,
+              hasFile: false
+            })
+          });
+          
+          if (response.ok) {
+            refreshPeers();
+            alert(`Registered peer ${targetPeerId}`);
+          } else {
+            alert('Failed to register peer');
+          }
+        } catch (err) {
+          console.error('Error registering peer:', err);
+        }
+      };
+      
+      // Connect to peer
+      const connectToPeer = async (targetPeerId) => {
+        try {
+          const response = await fetch(`/api/torrent/connect/${targetPeerId}`, {
+            method: 'POST'
+          });
+          
+          if (response.ok) {
+            setConnectedPeers([...connectedPeers, targetPeerId]);
+            alert(`Connected to peer ${targetPeerId}`);
+            setTimeout(refreshStatus, 1000);
+          } else {
+            alert('Failed to connect to peer');
+          }
+        } catch (err) {
+          console.error('Error connecting to peer:', err);
+        }
+      };
+      
+      // Refresh peers list
+      const refreshPeers = async () => {
+        try {
+          const response = await fetch('/api/torrent/peers');
+          if (response.ok) {
+            const data = await response.json();
+            setPeers(data);
+          }
+        } catch (err) {
+          console.error('Error fetching peers:', err);
+        }
+      };
+      
+      // Refresh torrent status
+      const refreshStatus = async () => {
+        try {
+          const response = await fetch('/api/torrent/status');
+          if (response.ok) {
+            const data = await response.json();
+            setTorrentStatus(data);
+          }
+        } catch (err) {
+          console.error('Error fetching status:', err);
+        }
+      };
+      
+      // Download file
+      const downloadFile = async () => {
+        try {
+          // Check status first
+          await refreshStatus();
+          
+          // Create video URL for streaming
+          setVideoUrl(`/api/files/download/${peerId}?t=${Date.now()}`);
+        } catch (err) {
+          console.error('Error downloading file:', err);
+        }
+      };
+      
+      // Force complete download by direct copying all pieces
+      const forceDownload = async () => {
+        try {
+          const sourcePeer = prompt("Enter source peer ID (e.g. 1001):", "1001");
+          if (!sourcePeer) return;
+          
+          // Show progress
+          const status = document.createElement('div');
+          status.id = 'force-download-status';
+          status.style.marginTop = '10px';
+          status.style.padding = '10px';
+          status.style.backgroundColor = '#f8f9fa';
+          status.style.borderRadius = '5px';
+          status.innerHTML = '<div>Force downloading pieces from peer ' + sourcePeer + ' to peer ' + peerId + '...</div>';
+          
+          const downloadButton = document.querySelector('.btn.btn-warning');
+          downloadButton.parentNode.appendChild(status);
+          
+          // Make direct API call to backend
+          const response = await fetch(`/api/torrent/force-download-all/${peerId}/${sourcePeer}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          });
+          
+          if (response.ok) {
+            const result = await response.json();
+            status.innerHTML = `<div>Force download complete. Copied ${result.copiedPieces} pieces.</div>`;
+            
+            // Poll status updates to show progress
+            let attempts = 0;
+            const pollStatus = async () => {
+              attempts++;
+              await refreshStatus();
+              
+              const currentStatus = await fetch('/api/torrent/status').then(r => r.json());
+              status.innerHTML = `<div>Force download complete. Now has ${currentStatus.downloadedPieces}/${currentStatus.totalPieces} pieces.</div>`;
+              
+              if (currentStatus.downloadedPieces < currentStatus.totalPieces && attempts < 5) {
+                // Keep polling if download is not complete
+                setTimeout(pollStatus, 2000);
+              } else {
+                // Try to download/stream when done
+                status.innerHTML += '<div>Starting playback...</div>';
+                setTimeout(downloadFile, 1000);
+              }
+            };
+            
+            pollStatus();
+          } else {
+            status.innerHTML = '<div class="text-danger">Failed to start force download.</div>';
+          }
+        } catch (err) {
+          console.error('Error forcing download:', err);
+          alert("Error: " + err.message);
+        }
+      };
+      
+      // Refresh data periodically
+      useEffect(() => {
+        if (peerId) {
+          refreshPeers();
+          refreshStatus();
+          
+          const interval = setInterval(() => {
+            refreshStatus();
+          }, 5000);
+          
+          return () => clearInterval(interval);
+        }
+      }, [peerId]);
+      
+      // Format bitfield for display
+      const formatBitfield = (bitfield) => {
+        if (!bitfield) return '';
+        
+        // Return first 20 chars with ellipsis if too long
+        return bitfield.length > 20 ? bitfield.substring(0, 20) + '...' : bitfield;
+      };
+      
+      // Render pieces grid based on bitfield
+      const renderPiecesGrid = (bitfield, totalPieces) => {
+        if (!bitfield || !totalPieces) return null;
+        
+        const expandedBitfield = bitfield.padEnd(totalPieces, '0');
+        const pieces = [];
+        
+        for (let i = 0; i < Math.min(expandedBitfield.length, 50); i++) {
+          pieces.push(
+            React.createElement('div', {
+              key: i,
+              className: `piece ${expandedBitfield[i] === '1' ? 'piece-downloaded' : 'piece-missing'}`,
+              title: `Piece ${i}: ${expandedBitfield[i] === '1' ? 'Downloaded' : 'Missing'}`
+            })
+          );
+        }
+        
+        return React.createElement('div', { className: "piece-grid" }, pieces);
+      };
+      
+      return (
+        <div className="container mt-4">
+          <h1 className="mb-4">P2P Torrent Client</h1>
+          
+          {/* Peer Initialization */}
+          <div className="card mb-4">
+            <div className="card-header">Initialize Peer</div>
+            <div className="card-body">
+              <form className="row g-3" onSubmit={(e) => e.preventDefault()}>
+                <div className="col-auto">
+                  <input 
+                    type="text" 
+                    className="form-control" 
+                    placeholder="Peer ID" 
+                    id="peer-id-input"
+                  />
+                </div>
+                <div className="col-auto">
+                  <button 
+                    className="btn btn-primary me-2" 
+                    onClick={() => initializePeer(document.getElementById('peer-id-input').value, false)}
+                  >
+                    Initialize as Leecher
+                  </button>
+                  <button 
+                    className="btn btn-success" 
+                    onClick={() => initializePeer(document.getElementById('peer-id-input').value, true)}
+                  >
+                    Initialize as Seeder
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+          
+          {peerId && (
+            <div>
+              {/* Current Peer Info */}
+              <div className="card mb-4">
+                <div className="card-header">Your Peer</div>
+                <div className="card-body">
+                  <h5 className="card-title">Peer ID: {peerId}</h5>
+                  
+                  {torrentStatus && (
+                    <div className="mt-3">
+                      <h6>Download Status</h6>
+                      <div className="progress">
+                        <div 
+                          className="progress-bar" 
+                          role="progressbar" 
+                          style={{ width: `${torrentStatus.progress || 0}%` }}
+                          aria-valuenow={torrentStatus.progress || 0} 
+                          aria-valuemin="0" 
+                          aria-valuemax="100"
+                        >
+                          {Math.round(torrentStatus.progress || 0)}%
+                        </div>
+                      </div>
+                      <p className="mt-2">
+                        Pieces: {torrentStatus.downloadedPieces || 0}/{torrentStatus.totalPieces || 0}
+                      </p>
+                      
+                      {torrentStatus.bitfield && (
+                        <div>
+                          <div className="bitfield-display">
+                            Bitfield: {formatBitfield(torrentStatus.bitfield)}
+                          </div>
+                          {renderPiecesGrid(torrentStatus.bitfield, torrentStatus.totalPieces)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* File Upload */}
+                  <div className="mt-4">
+                    <h6>Upload File</h6>
+                    <form onSubmit={uploadFile}>
+                      <div className="mb-3">
+                        <input 
+                          type="file" 
+                          className="form-control" 
+                          ref={fileInputRef}
+                        />
+                      </div>
+                      <button type="submit" className="btn btn-primary">Upload</button>
+                      
+                      <div id="upload-progress">
+                        <div className="progress">
+                          <div 
+                            className="progress-bar progress-bar-striped progress-bar-animated" 
+                            role="progressbar" 
+                            style={{ width: `${uploadProgress}%` }}
+                            aria-valuenow={uploadProgress} 
+                            aria-valuemin="0" 
+                            aria-valuemax="100"
+                          >
+                            {uploadProgress}%
+                          </div>
+                        </div>
+                      </div>
+                    </form>
+                  </div>
+                  
+                  {/* Download / Stream */}
+                  <div className="mt-4">
+                    <h6>Download / Stream</h6>
+                    <button className="btn btn-success me-2" onClick={downloadFile}>
+                      Start Download/Stream
+                    </button>
+                    <button className="btn btn-warning" onClick={forceDownload}>
+                      Force Complete Download
+                    </button>
+                    
+                    {videoUrl && (
+                      <div className="video-preview">
+                        <video 
+                          controls 
+                          src={videoUrl} 
+                          className="img-fluid"
+                        >
+                          Your browser does not support the video tag.
+                        </video>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              
+              {/* Other Peers */}
+              <div className="card mb-4">
+                <div className="card-header">
+                  <div className="d-flex justify-content-between align-items-center">
+                    <span>Available Peers</span>
+                    <button className="btn btn-sm btn-secondary" onClick={refreshPeers}>
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+                <div className="card-body">
+                  <div className="row">
+                    {peers.length > 0 ? (
+                      peers.map(peer => (
+                        <div key={peer.peerId} className="col-md-4">
+                          <div className="card peer-card">
+                            <div className="card-body">
+                              <h5 className="card-title">Peer {peer.peerId}</h5>
+                              <p className="card-text">
+                                <small>
+                                  {peer.hasFile ? '⭐ Seeder' : '⬇️ Leecher'}<br />
+                                  {peer.interested ? '🔍 Interested' : '😴 Not Interested'}<br />
+                                  {peer.choked ? '🚫 Choked' : '✅ Unchoked'}
+                                </small>
+                              </p>
+                              {peer.peerId !== peerId && !connectedPeers.includes(peer.peerId) && (
+                                <button 
+                                  className="btn btn-sm btn-primary" 
+                                  onClick={() => connectToPeer(peer.peerId)}
+                                >
+                                  Connect
+                                </button>
+                              )}
+                              {connectedPeers.includes(peer.peerId) && (
+                                <span className="badge bg-success">Connected</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="col-12">
+                        <p className="text-muted">No peers available</p>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Register Peer Form */}
+                  <div className="mt-4">
+                    <h6>Register New Peer</h6>
+                    <form className="row g-3" onSubmit={registerPeer}>
+                      <div className="col-auto">
+                        <input 
+                          type="text" 
+                          className="form-control" 
+                          placeholder="Peer ID" 
+                          id="target-peer-id"
+                        />
+                      </div>
+                      <div className="col-auto">
+                        <button type="submit" className="btn btn-primary">Register</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+    
+    ReactDOM.render(<TorrentClient />, document.getElementById('root'));
+  </script>
+</body>
+</html>

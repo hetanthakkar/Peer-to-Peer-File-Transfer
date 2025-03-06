@@ -1,0 +1,7 @@
+2025-03-06 00:00:42.254  INFO 5288 --- [http-nio-8080-exec-1] com.p2p.torrent.service.FileService      : Download status check: has 2/91 pieces, complete: false
+2025-03-06 00:01:42.251  INFO 5288 --- [http-nio-8080-exec-5] com.p2p.torrent.service.FileService      : Download status check: has 2/91 pieces, complete: false
+2025-03-06 00:02:42.260  INFO 5288 --- [http-nio-8080-exec-7] com.p2p.torrent.service.FileService      : Download status check: has 2/91 pieces, complete: false
+2025-03-06 00:03:42.275  INFO 5288 --- [http-nio-8080-exec-9] com.p2p.torrent.service.FileService      : Download status check: has 2/91 pieces, complete: false
+2025-03-06 00:04:33.920  INFO 5288 --- [SpringApplicationShutdownHook] o.s.m.s.b.SimpleBrokerMessageHandler     : Stopping...
+2025-03-06 00:04:33.920  INFO 5288 --- [SpringApplicationShutdownHook] o.s.m.s.b.SimpleBrokerMessageHandler     : BrokerAvailabilityEvent[available=false, SimpleBrokerMessageHandler [org.springframework.messaging.simp.broker.DefaultSubscriptionRegistry@53c6f96d]]
+2025-03-06 00:04:33.920  INFO 5288 --- [SpringApplicationShutdownHook] o.s.m.s.b.SimpleBrokerMessageHandler     : Stopped.
