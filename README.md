@@ -1,5 +1,7 @@
 # P2P File Sharing - Spring Boot API
 
+[🎥 Setup Video Walkthrough](https://drive.google.com/file/d/1183EwV8wtO03aHmpgO1YF-Awkz-XJN7E/view?usp=sharing)
+
 This is a Spring Boot implementation of a P2P (Peer-to-Peer) file sharing application inspired by the BitTorrent protocol. The application allows users to share files in a distributed manner, where each peer can act as both client and server.
 
 ## Features
@@ -116,4 +118,3 @@ p2p.pieceSize=100000
 - Enhanced security features
 - File integrity verification
 
-[🎥 Setup Video Walkthrough](https://drive.google.com/file/d/1183EwV8wtO03aHmpgO1YF-Awkz-XJN7E/view?usp=sharing)
