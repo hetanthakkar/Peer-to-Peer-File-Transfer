@@ -1,5 +1,6 @@
 package com.p2p.torrent.controller;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashMap;
@@ -417,5 +418,129 @@ public class TorrentController {
         // This would typically split the file into pieces and store them
         
         return ResponseEntity.ok("File uploaded successfully");
+    }
+    
+    @GetMapping("/test-websocket/{targetPeerId}")
+    public ResponseEntity<Map<String, Object>> testWebSocketConnection(@PathVariable String targetPeerId) {
+        Map<String, Object> response = new HashMap<>();
+        String localPeerId = messageService.getLocalPeerId();
+        
+        try {
+            log.info("WEBSOCKET TEST: Sending test message from {} to {}", localPeerId, targetPeerId);
+            
+            // Send a simple test message
+            Message testMsg = new Message(Message.MessageType.INTERESTED, localPeerId, -1, null, null);
+            messagingTemplate.convertAndSendToUser(targetPeerId, "/queue/messages", testMsg);
+            log.info("WEBSOCKET TEST: Test message sent via convertAndSendToUser");
+            
+            // Try alternate method
+            messagingTemplate.convertAndSend("/user/" + targetPeerId + "/queue/messages", testMsg);
+            log.info("WEBSOCKET TEST: Test message sent via direct path");
+            
+            // Also try with a small piece of data
+            byte[] testData = new byte[256];
+            for (int i = 0; i < testData.length; i++) {
+                testData[i] = (byte)(i % 100);
+            }
+            
+            Message pieceMsg = new Message(Message.MessageType.PIECE, localPeerId, 0, testData, null);
+            messagingTemplate.convertAndSendToUser(targetPeerId, "/queue/messages", pieceMsg);
+            log.info("WEBSOCKET TEST: Test data piece sent with {} bytes", testData.length);
+            
+            response.put("status", "Test messages sent");
+            response.put("fromPeer", localPeerId);
+            response.put("toPeer", targetPeerId);
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("WEBSOCKET TEST: Error sending test message: {}", e.getMessage(), e);
+            response.put("status", "Error");
+            response.put("error", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+    
+    /**
+     * Direct HTTP-based fallback for piece transfer (no WebSocket)
+     */
+    @GetMapping("/direct-get-piece/{sourcePeerId}/{pieceIndex}")
+    public ResponseEntity<byte[]> getDirectPiece(
+            @PathVariable String sourcePeerId,
+            @PathVariable int pieceIndex) {
+        
+        try {
+            log.info("DIRECT PIECE: Request for piece {} from peer {}", pieceIndex, sourcePeerId);
+            
+            // Force the source peer ID to be used for file access
+            String originalPeerId = messageService.getLocalPeerId();
+            
+            // Read the piece directly from the source peer's directory
+            String piecePath = "peer_" + sourcePeerId + "/piece_" + pieceIndex;
+            File pieceFile = new File(piecePath);
+            
+            if (pieceFile.exists() && pieceFile.length() > 0) {
+                byte[] pieceData = java.nio.file.Files.readAllBytes(pieceFile.toPath());
+                log.info("DIRECT PIECE: Successfully read piece {} from peer {} (size: {} bytes)",
+                        pieceIndex, sourcePeerId, pieceData.length);
+                
+                return ResponseEntity.ok()
+                        .header("Content-Type", "application/octet-stream")
+                        .header("Content-Length", String.valueOf(pieceData.length))
+                        .body(pieceData);
+            } else {
+                log.warn("DIRECT PIECE: Piece {} not found for peer {}", pieceIndex, sourcePeerId);
+                return ResponseEntity.notFound().build();
+            }
+        } catch (Exception e) {
+            log.error("DIRECT PIECE ERROR: Failed to get piece {}: {}", pieceIndex, e.getMessage());
+            return ResponseEntity.status(500).build();
+        }
+    }
+    
+    /**
+     * Lightweight file discovery endpoint to check if a file exists
+     */
+    @GetMapping("/check-file-exists/{peerId}/{fileName}")
+    public ResponseEntity<Map<String, Object>> checkFileExists(
+            @PathVariable String peerId,
+            @PathVariable String fileName) {
+        
+        Map<String, Object> response = new HashMap<>();
+        
+        // Check in peer directory
+        String peerDirPath = "peer_" + peerId;
+        File peerDir = new File(peerDirPath);
+        File fileInPeerDir = new File(peerDir, fileName);
+        
+        // Check in main directory
+        File fileInMainDir = new File(fileName);
+        
+        boolean existsInPeerDir = fileInPeerDir.exists();
+        boolean existsInMainDir = fileInMainDir.exists();
+        
+        response.put("fileName", fileName);
+        response.put("existsInPeerDir", existsInPeerDir);
+        response.put("existsInMainDir", existsInMainDir);
+        
+        if (existsInPeerDir) {
+            response.put("peerDirPath", fileInPeerDir.getAbsolutePath());
+            response.put("peerDirSize", fileInPeerDir.length());
+        }
+        
+        if (existsInMainDir) {
+            response.put("mainDirPath", fileInMainDir.getAbsolutePath());
+            response.put("mainDirSize", fileInMainDir.length());
+        }
+        
+        // Check pieces directory
+        int pieceCount = 0;
+        if (peerDir.exists() && peerDir.isDirectory()) {
+            File[] pieceFiles = peerDir.listFiles((dir, name) -> name.startsWith("piece_"));
+            pieceCount = pieceFiles != null ? pieceFiles.length : 0;
+        }
+        
+        response.put("pieceCount", pieceCount);
+        
+        return ResponseEntity.ok(response);
     }
 }

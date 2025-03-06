@@ -46,9 +46,11 @@ The application will start on port 8080 by default.
 ### Peer Management
 
 - `POST /api/torrent/init/{peerId}` - Initialize the local peer
+
   - Request body: `{"hasFile": boolean, "hostname": string, "port": number}`
 
 - `POST /api/torrent/peer` - Register a new peer
+
   - Request body: `{"peerId": string, "hostname": string, "port": number, "hasFile": boolean}`
 
 - `GET /api/torrent/peers` - Get all registered peers
@@ -60,6 +62,7 @@ The application will start on port 8080 by default.
 ### File Management
 
 - `POST /api/files/upload` - Upload a file
+
   - Form data: `file` (MultipartFile), `peerId` (string)
 
 - `GET /api/files/download/{peerId}` - Download the complete file from a peer
@@ -112,3 +115,5 @@ p2p.pieceSize=100000
 - DHT (Distributed Hash Table) for better peer management
 - Enhanced security features
 - File integrity verification
+
+![Setup Screenshot](/Users/hetanthakkar/Desktop)

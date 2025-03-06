@@ -64,6 +64,8 @@
       const [uploadProgress, setUploadProgress] = useState(0);
       const [connectedPeers, setConnectedPeers] = useState([]);
       const [videoUrl, setVideoUrl] = useState('');
+      const [stompClient, setStompClient] = useState(null);
+      const [webSocketConnected, setWebSocketConnected] = useState(false);
       const fileInputRef = useRef(null);
       
       // Initialize peer
@@ -171,19 +173,161 @@
       // Connect to peer
       const connectToPeer = async (targetPeerId) => {
         try {
+          document.getElementById('direct-transfer-status').innerHTML = 
+            `<strong>Transfer Status:</strong> Connecting to peer ${targetPeerId}...`;
+          
           const response = await fetch(`/api/torrent/connect/${targetPeerId}`, {
             method: 'POST'
           });
           
           if (response.ok) {
-            setConnectedPeers([...connectedPeers, targetPeerId]);
-            alert(`Connected to peer ${targetPeerId}`);
+            setConnectedPeers(prev => {
+              if (!prev.includes(targetPeerId)) {
+                return [...prev, targetPeerId];
+              }
+              return prev;
+            });
+            
+            console.log(`Connected to peer ${targetPeerId}. Starting direct HTTP transfer.`);
+            document.getElementById('direct-transfer-status').innerHTML = 
+              `<strong>Transfer Status:</strong> Connected to peer ${targetPeerId}, starting direct piece transfer...`;
+            
+            // Skip WebSocket check, always use HTTP
             setTimeout(refreshStatus, 1000);
+            
+            // Always start direct HTTP transfer
+            setTimeout(() => {
+              startDirectPieceTransfer(targetPeerId);
+            }, 500);
+            
+            // Only show alert if this was a manual connection (not auto)
+            if (!document.getElementById('direct-transfer-status').innerText.includes("Found seeder")) {
+              alert(`Connected to peer ${targetPeerId}, starting direct HTTP transfer`);
+            }
           } else {
+            document.getElementById('direct-transfer-status').innerHTML = 
+              `<strong>Transfer Status:</strong> Failed to connect to peer ${targetPeerId}`;
+            
             alert('Failed to connect to peer');
           }
         } catch (err) {
           console.error('Error connecting to peer:', err);
+          document.getElementById('direct-transfer-status').innerHTML = 
+            `<strong>Transfer Status:</strong> Error connecting to peer ${targetPeerId}: ${err.message}`;
+        }
+      };
+      
+      // Function to use direct HTTP transfer for pieces instead of WebSocket
+      const startDirectPieceTransfer = async (sourcePeerId) => {
+        try {
+          // Force HTTP fallback regardless of WebSocket connection state
+          // This ensures we use the reliable direct HTTP method for now
+          console.log("Using direct HTTP fallback for piece transfers regardless of WebSocket status");
+          
+          console.log(`Starting direct HTTP piece transfer from peer ${sourcePeerId}`);
+          
+          // Make sure the source peer ID is valid
+          if (!sourcePeerId) {
+            console.error("Invalid source peer ID");
+            document.getElementById('direct-transfer-status').innerHTML = 
+              '<strong>Transfer Status:</strong> Error: Invalid source peer ID';
+            return;
+          }
+          
+          document.getElementById('direct-transfer-status').innerHTML = 
+            `<strong>Transfer Status:</strong> Starting direct HTTP piece transfer from peer ${sourcePeerId}...`;
+          
+          // Get current status
+          const statusResponse = await fetch('/api/torrent/status');
+          const status = await statusResponse.json();
+          
+          if (status.downloadedPieces >= status.totalPieces) {
+            console.log("All pieces already downloaded");
+            document.getElementById('direct-transfer-status').innerHTML = 
+              '<strong>Transfer Status:</strong> All pieces already downloaded!';
+            return;
+          }
+          
+          // Get missing pieces
+          const missingPieces = [];
+          for (let i = 0; i < status.totalPieces; i++) {
+            if (status.bitfield[i] !== '1') {
+              missingPieces.push(i);
+            }
+          }
+          
+          console.log(`Need to download ${missingPieces.length} pieces from peer ${sourcePeerId}`);
+          document.getElementById('direct-transfer-status').innerHTML = 
+            `<strong>Transfer Status:</strong> Downloading ${missingPieces.length} pieces from peer ${sourcePeerId}...`;
+          
+          // Start with first 5 pieces
+          const initialBatch = missingPieces.slice(0, 5);
+          
+          // Function to download a single piece
+          const downloadPiece = async (pieceIndex) => {
+            try {
+              console.log(`Direct downloading piece ${pieceIndex} from peer ${sourcePeerId}`);
+              document.getElementById('direct-transfer-status').innerHTML = 
+                `<strong>Transfer Status:</strong> Downloading piece ${pieceIndex} from peer ${sourcePeerId}...`;
+              
+              const pieceResponse = await fetch(`/api/torrent/direct-get-piece/${sourcePeerId}/${pieceIndex}`);
+              
+              if (pieceResponse.ok) {
+                console.log(`Successfully downloaded piece ${pieceIndex}`);
+                document.getElementById('direct-transfer-status').innerHTML = 
+                  `<strong>Transfer Status:</strong> Piece ${pieceIndex} successfully downloaded. Refreshing status...`;
+                // Piece was saved server-side, refresh status to see update
+                await refreshStatus();
+                return true;
+              } else {
+                console.error(`Failed to download piece ${pieceIndex}: ${pieceResponse.status}`);
+                document.getElementById('direct-transfer-status').innerHTML = 
+                  `<strong>Transfer Status:</strong> Error downloading piece ${pieceIndex}: ${pieceResponse.status}`;
+                return false;
+              }
+            } catch (err) {
+              console.error(`Error downloading piece ${pieceIndex}:`, err);
+              document.getElementById('direct-transfer-status').innerHTML = 
+                `<strong>Transfer Status:</strong> Error downloading piece ${pieceIndex}: ${err.message}`;
+              return false;
+            }
+          };
+          
+          // Start downloading initial batch
+          for (const pieceIndex of initialBatch) {
+            await downloadPiece(pieceIndex);
+          }
+          
+          // Continue with the rest of the pieces in the background
+          setTimeout(async () => {
+            const remainingPieces = missingPieces.slice(5);
+            let successCount = initialBatch.length;
+            
+            for (let i = 0; i < remainingPieces.length; i++) {
+              const pieceIndex = remainingPieces[i];
+              const success = await downloadPiece(pieceIndex);
+              
+              if (success) {
+                successCount++;
+                document.getElementById('direct-transfer-status').innerHTML = 
+                  `<strong>Transfer Status:</strong> Downloaded ${successCount}/${missingPieces.length} pieces...`;
+                
+                // If all pieces are downloaded, try to create the file
+                if (successCount === missingPieces.length) {
+                  document.getElementById('direct-transfer-status').innerHTML = 
+                    `<strong>Transfer Status:</strong> All pieces downloaded! Creating file...`;
+                  await refreshStatus();
+                  downloadFile();
+                }
+              }
+              
+              // Add a short delay between requests to avoid overwhelming the server
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          }, 1000);
+          
+        } catch (err) {
+          console.error("Error starting direct piece transfer:", err);
         }
       };
       
@@ -283,17 +427,159 @@
         }
       };
       
+      // Connect to WebSocket
+      const connectWebSocket = () => {
+        if (!peerId) return;
+        
+        try {
+          console.log("Attempting to connect to WebSocket...");
+          // Create SockJS and STOMP client
+          const socket = new SockJS('/ws');
+          const client = Stomp.over(socket);
+          
+          // Disable debug logging
+          client.debug = null;
+          
+          // Connect with retries
+          const connectWithRetry = (retryCount = 0) => {
+            console.log(`WebSocket connection attempt ${retryCount + 1}`);
+            
+            client.connect(
+              {}, // No headers needed
+              frame => {
+                // Connected successfully
+                console.log("WebSocket Connected:", frame);
+                setWebSocketConnected(true);
+                setStompClient(client);
+                
+                // Subscribe to our personal queue
+                client.subscribe(`/user/${peerId}/queue/messages`, message => {
+                  try {
+                    const receivedMsg = JSON.parse(message.body);
+                    console.log("WebSocket Message Received:", receivedMsg);
+                    
+                    // Handle piece messages automatically
+                    if (receivedMsg.type === "PIECE" && receivedMsg.pieceIndex !== undefined) {
+                      console.log(`Received piece ${receivedMsg.pieceIndex} via WebSocket`);
+                      // Refresh status after receiving piece
+                      setTimeout(refreshStatus, 500);
+                    }
+                  } catch (err) {
+                    console.error("Error processing WebSocket message:", err);
+                  }
+                });
+                
+                // Also subscribe to the public topics
+                client.subscribe('/topic/pieces', message => {
+                  const receivedMsg = JSON.parse(message.body);
+                  console.log("Topic Message Received:", receivedMsg);
+                });
+                
+                alert(`WebSocket connected successfully as peer ${peerId}`);
+              },
+              error => {
+                console.error("WebSocket connection error:", error);
+                setWebSocketConnected(false);
+                
+                // Try to reconnect with exponential backoff, up to 5 retries
+                if (retryCount < 5) {
+                  const timeout = Math.pow(2, retryCount) * 1000;
+                  console.log(`Retrying WebSocket connection in ${timeout}ms...`);
+                  setTimeout(() => connectWithRetry(retryCount + 1), timeout);
+                } else {
+                  alert("Failed to establish WebSocket connection after multiple attempts.\nThe direct HTTP fallback will be used instead.");
+                }
+              }
+            );
+          };
+          
+          connectWithRetry();
+          
+        } catch (err) {
+          console.error("Error setting up WebSocket connection:", err);
+          alert("Error setting up WebSocket: " + err.message);
+        }
+      };
+      
       // Refresh data periodically
       useEffect(() => {
         if (peerId) {
           refreshPeers();
           refreshStatus();
           
+          // Connect to WebSocket after initializing
+          connectWebSocket();
+          
+          // Add periodic checks to find seeders and initiate HTTP fallback
+          const checkForSeeders = () => {
+            console.log("Checking for available seeders...");
+            document.getElementById('direct-transfer-status').innerHTML = 
+              '<strong>Transfer Status:</strong> Searching for seeders...';
+            
+            fetch('/api/torrent/peers')
+              .then(response => response.json())
+              .then(peers => {
+                console.log("DEBUG - Auto check - All peers:", JSON.stringify(peers));
+                
+                // More lenient check for hasFile property
+                const seeders = peers.filter(p => {
+                  const isSeeder = p.hasFile === true || p.hasFile === "true" || p.hasFile == true;
+                  console.log(`DEBUG - Auto check - Peer ${p.peerId}: hasFile=${p.hasFile}, isSeeder=${isSeeder}`);
+                  return isSeeder && p.peerId !== peerId;
+                });
+                console.log("DEBUG - Auto check - Found seeders:", JSON.stringify(seeders));
+                
+                if (seeders.length > 0) {
+                  const seeder = seeders[0];
+                  console.log(`Found seeder ${seeder.peerId}, starting direct HTTP transfer`);
+                  document.getElementById('direct-transfer-status').innerHTML = 
+                    `<strong>Transfer Status:</strong> Found seeder ${seeder.peerId}, starting direct transfer...`;
+                  
+                  // Connect to the seeder first if not already connected
+                  if (!connectedPeers.includes(seeder.peerId)) {
+                    console.log(`Connecting to seeder ${seeder.peerId} first`);
+                    connectToPeer(seeder.peerId);
+                  } else {
+                    // Already connected, start transfer directly
+                    startDirectPieceTransfer(seeder.peerId);
+                  }
+                } else {
+                  console.log("No seeders found yet, will check again in 5 seconds");
+                  document.getElementById('direct-transfer-status').innerHTML = 
+                    '<strong>Transfer Status:</strong> No seeders found yet, will keep checking...';
+                  
+                  // Try again in 5 seconds
+                  setTimeout(checkForSeeders, 5000);
+                }
+              })
+              .catch(err => {
+                console.error("Error checking for seeders:", err);
+                document.getElementById('direct-transfer-status').innerHTML = 
+                  `<strong>Transfer Status:</strong> Error checking for seeders: ${err.message}`;
+                
+                // Try again in 5 seconds despite error
+                setTimeout(checkForSeeders, 5000);
+              });
+          };
+          
+          // Start checking for seeders after a short delay
+          setTimeout(checkForSeeders, 2000);
+          
           const interval = setInterval(() => {
             refreshStatus();
           }, 5000);
           
-          return () => clearInterval(interval);
+          return () => {
+            clearInterval(interval);
+            
+            // Disconnect WebSocket when component unmounts
+            if (stompClient && stompClient.connected) {
+              console.log("Disconnecting WebSocket");
+              stompClient.disconnect();
+              setStompClient(null);
+              setWebSocketConnected(false);
+            }
+          };
         }
       }, [peerId]);
       
@@ -434,9 +720,73 @@
                     <button className="btn btn-success me-2" onClick={downloadFile}>
                       Start Download/Stream
                     </button>
-                    <button className="btn btn-warning" onClick={forceDownload}>
+                    <button className="btn btn-warning me-2" onClick={forceDownload}>
                       Force Complete Download
                     </button>
+                    <button 
+                      className={`btn ${webSocketConnected ? 'btn-success' : 'btn-danger'}`}
+                      onClick={connectWebSocket}
+                    >
+                      {webSocketConnected ? 'WebSocket Connected' : 'Reconnect WebSocket'}
+                    </button>
+                    <div className="alert alert-info mt-3">
+                      <strong>WebSocket Status:</strong> {webSocketConnected ? 
+                        '✅ Connected - but using HTTP fallback for reliability' : 
+                        '❌ Not connected - using HTTP fallback'}
+                      <br/>
+                      <strong>Download Method:</strong> Currently using direct HTTP transfer for all piece transfers.
+                      <br/>
+                      <strong>Troubleshooting:</strong> If download gets stuck, use the "Force Complete Download" button.
+                      This will copy all pieces at once and bypass the piece-by-piece transfer.
+                    </div>
+                    <div id="direct-transfer-status" className="alert alert-secondary mt-2">
+                      <strong>Transfer Status:</strong> <span id="transfer-status-message">Initializing...</span>
+                    </div>
+                    
+                    <div className="mt-2 d-grid gap-2">
+                      <button className="btn btn-primary" onClick={() => {
+                        // Manual trigger for direct transfer with detailed debugging
+                        document.getElementById('direct-transfer-status').innerHTML = 
+                          `<strong>Transfer Status:</strong> Searching for seeders...`;
+                        
+                        fetch('/api/torrent/peers')
+                          .then(response => response.json())
+                          .then(peers => {
+                            console.log("DEBUG - All peers:", JSON.stringify(peers));
+                            
+                            // Extra checks for each peer
+                            peers.forEach(p => {
+                              console.log(`DEBUG - Peer ${p.peerId}: hasFile=${p.hasFile}, type=${typeof p.hasFile}`);
+                            });
+                            
+                            const seeders = peers.filter(p => {
+                              // Check the exact type and value of hasFile
+                              const isSeeder = p.hasFile === true || p.hasFile === "true" || p.hasFile == true;
+                              console.log(`DEBUG - Filtering peer ${p.peerId}: hasFile=${p.hasFile}, isSeeder=${isSeeder}`);
+                              return isSeeder && p.peerId !== peerId;
+                            });
+                            
+                            console.log("DEBUG - Found seeders:", JSON.stringify(seeders));
+                            
+                            if (seeders.length > 0) {
+                              const seeder = seeders[0];
+                              console.log(`DEBUG - Selected seeder: ${JSON.stringify(seeder)}`);
+                              alert(`Found seeder ${seeder.peerId}, starting direct transfer`);
+                              connectToPeer(seeder.peerId);
+                            } else {
+                              // Add option to manually specify seeder
+                              const manualPeerId = prompt('No seeders found automatically. Enter seeder peer ID manually:', '1001');
+                              if (manualPeerId && manualPeerId !== peerId) {
+                                connectToPeer(manualPeerId);
+                              } else {
+                                alert('No seeders found or specified. Make sure a seeder is initialized with a different peer ID.');
+                              }
+                            }
+                          });
+                      }}>
+                        Start Direct Transfer Now
+                      </button>
+                    </div>
                     
                     {videoUrl && (
                       <div className="video-preview">

@@ -62,26 +62,85 @@ public class FileService {
         // Use default file name to start
         currentFileName = config.getFileName();
         
+        log.info("INIT: Peer {} initialized with filename '{}', hasFile={}, totalPieces={}", 
+                peerId, currentFileName, hasFile, totalPieces);
+        
+        // Debug file path resolution
+        checkSourceFile(peerId, hasFile);
+        
         if (hasFile) {
             try {
                 // If peer has complete file, split it into pieces
                 if (hasFile) {
+                    log.info("INIT: Splitting file into {} pieces for seeder {}", totalPieces, peerId);
                     splitFileIntoPieces(peerId);
                     bitfield.set(0, totalPieces);
+                    log.info("INIT: Set full bitfield for seeder {}", peerId);
                 }
             } catch (IOException e) {
-                log.error("Failed to split file into pieces", e);
+                log.error("INIT ERROR: Failed to split file into pieces: {}", e.getMessage());
+                e.printStackTrace();
             }
         } else {
+            log.info("INIT: Checking for existing pieces for leecher {}", peerId);
             // Check if any pieces already exist in the peer directory
             for (int i = 0; i < totalPieces; i++) {
                 String pieceFileName = peerDir + "/piece_" + i;
                 java.io.File pieceFile = new java.io.File(pieceFileName);
                 if (pieceFile.exists() && pieceFile.length() > 0) {
-                    log.info("Found existing piece {} for peer {}, updating bitfield", i, peerId);
+                    log.info("INIT: Found existing piece {} for peer {}, updating bitfield", i, peerId);
                     bitfield.set(i);
                 }
             }
+            log.info("INIT: Found {} existing pieces for leecher {}", bitfield.cardinality(), peerId);
+        }
+    }
+    
+    /**
+     * Checks source file existence and logs detailed info for debugging
+     */
+    private void checkSourceFile(String peerId, boolean hasFile) {
+        try {
+            log.info("FILE CHECK: Checking source file for peer {}", peerId);
+            
+            // Check configuration
+            log.info("CONFIG: fileName={}, pieceSize={}, totalPieces={}", 
+                     config.getFileName(), config.getPieceSize(), totalPieces);
+            
+            // Try different file path resolutions
+            File absoluteFile = new File(currentFileName);
+            File relativeFile = new File(".", currentFileName);
+            File peerFile = new File("peer_" + peerId, currentFileName);
+            
+            log.info("PATH RESOLUTION:");
+            log.info("- Absolute: {} (exists: {})", absoluteFile.getAbsolutePath(), absoluteFile.exists());
+            log.info("- Relative: {} (exists: {})", relativeFile.getAbsolutePath(), relativeFile.exists());
+            log.info("- Peer Dir: {} (exists: {})", peerFile.getAbsolutePath(), peerFile.exists());
+            
+            // Check working directory and peer directory
+            log.info("DIRECTORIES:");
+            log.info("- Working dir: {}", System.getProperty("user.dir"));
+            log.info("- Peer dir exists: {}", new File("peer_" + peerId).exists());
+            
+            // If file exists somewhere, log its size and permissions
+            File existingFile = null;
+            if (absoluteFile.exists()) existingFile = absoluteFile;
+            else if (relativeFile.exists()) existingFile = relativeFile;
+            else if (peerFile.exists()) existingFile = peerFile;
+            
+            if (existingFile != null) {
+                log.info("FILE DETAILS: size={} bytes, canRead={}, canWrite={}", 
+                         existingFile.length(), existingFile.canRead(), existingFile.canWrite());
+                
+                // Update current filename to the actual location
+                currentFileName = existingFile.getAbsolutePath();
+                log.info("FILE RESOLUTION: Updated currentFileName to '{}'", currentFileName);
+            } else if (hasFile) {
+                log.error("FILE NOT FOUND: Peer {} marked as having file '{}' but file not found!", 
+                         peerId, currentFileName);
+            }
+        } catch (Exception e) {
+            log.error("FILE CHECK ERROR: Failed while checking source file: {}", e.getMessage());
         }
     }
     
@@ -89,23 +148,73 @@ public class FileService {
         // Get provided filename or fall back to default
         String sourceFilePath = config.getFileName();
         
+        // Try multiple different locations for the file
+        File sourceFile = null;
+        File directFile = new File(sourceFilePath);
+        File relativeFile = new File(".", sourceFilePath);
+        File peerDirFile = new File("peer_" + peerId, sourceFilePath);
+        
+        log.info("SPLIT FILE: Looking for source file '{}' in multiple locations", sourceFilePath);
+        log.info("SPLIT FILE: Direct path: {} (exists: {})", directFile.getAbsolutePath(), directFile.exists());
+        log.info("SPLIT FILE: Relative path: {} (exists: {})", relativeFile.getAbsolutePath(), relativeFile.exists());
+        log.info("SPLIT FILE: Peer dir path: {} (exists: {})", peerDirFile.getAbsolutePath(), peerDirFile.exists());
+        
+        // Find the first existing file
+        if (directFile.exists()) {
+            sourceFile = directFile;
+            sourceFilePath = directFile.getAbsolutePath();
+            log.info("SPLIT FILE: Using direct path: {}", sourceFilePath);
+        } else if (relativeFile.exists()) {
+            sourceFile = relativeFile;
+            sourceFilePath = relativeFile.getAbsolutePath();
+            log.info("SPLIT FILE: Using relative path: {}", sourceFilePath);
+        } else if (peerDirFile.exists()) {
+            sourceFile = peerDirFile;
+            sourceFilePath = peerDirFile.getAbsolutePath();
+            log.info("SPLIT FILE: Using peer dir path: {}", sourceFilePath);
+        } else {
+            // Look in all peer directories
+            log.info("SPLIT FILE: Looking in all peer directories");
+            File peersRoot = new File(".");
+            File[] peerDirs = peersRoot.listFiles(file -> 
+                file.isDirectory() && file.getName().startsWith("peer_"));
+            
+            if (peerDirs != null) {
+                for (File dir : peerDirs) {
+                    File possibleFile = new File(dir, config.getFileName());
+                    if (possibleFile.exists()) {
+                        sourceFile = possibleFile;
+                        sourceFilePath = possibleFile.getAbsolutePath();
+                        log.info("SPLIT FILE: Found in peer directory: {}", sourceFilePath);
+                        break;
+                    }
+                }
+            }
+        }
+        
         // Save original filename to metadata
         Path fileNamePath = Paths.get("peer_" + peerId, "metadata", "filename");
         Files.write(fileNamePath, sourceFilePath.getBytes());
         
-        // Set internal filename tracking
+        // Set internal filename tracking to the actual found location
         currentFileName = sourceFilePath;
         
-        File sourceFile = new File(sourceFilePath);
-        
-        if (!sourceFile.exists()) {
-            log.error("Source file not found: {}", sourceFilePath);
+        if (sourceFile == null || !sourceFile.exists()) {
+            log.error("SPLIT FILE ERROR: Source file not found in any location: {}", sourceFilePath);
+            
+            // As a last resort, ask the user to provide it
+            log.info("MANUAL INTERVENTION NEEDED: Please place the file '{}' in the current directory", config.getFileName());
+            
             return;
         }
+        
+        log.info("SPLIT FILE: Beginning to split file {} into {} pieces", sourceFilePath, totalPieces);
         
         try (RandomAccessFile raf = new RandomAccessFile(sourceFile, "r")) {
             long fileSize = raf.length();
             int pieceSize = config.getPieceSize();
+            
+            log.info("SPLIT FILE: File size: {} bytes, piece size: {} bytes", fileSize, pieceSize);
             
             for (int i = 0; i < totalPieces; i++) {
                 int currentPieceSize = (int) Math.min(pieceSize, fileSize - i * pieceSize);
@@ -119,7 +228,16 @@ public class FileService {
                 
                 // Save piece to disk
                 savePieceToDisk(peerId, i, piece);
+                
+                if (i % 10 == 0 || i == totalPieces - 1) {
+                    log.info("SPLIT FILE: Processed {}/{} pieces", i+1, totalPieces);
+                }
             }
+            
+            log.info("SPLIT FILE: Successfully split file into {} pieces", totalPieces);
+        } catch (Exception e) {
+            log.error("SPLIT FILE ERROR: Failed to split file: {}", e.getMessage(), e);
+            throw new IOException("Failed to split file", e);
         }
     }
     
@@ -151,6 +269,12 @@ public class FileService {
     }
     
     public byte[] getPiece(String peerId, int pieceIndex) {
+        // Validate piece index is within valid range
+        if (pieceIndex < 0 || pieceIndex >= totalPieces) {
+            log.error("Invalid piece index {} requested (total pieces: {})", pieceIndex, totalPieces);
+            return null;
+        }
+        
         // Try to get from memory
         byte[] piece = pieceMap.get(pieceIndex);
         
@@ -166,81 +290,102 @@ public class FileService {
             Path path = Paths.get(pieceFileName);
             if (Files.exists(path)) {
                 byte[] data = Files.readAllBytes(path);
-                log.info("Loaded piece {} from disk for peer {}, size: {}", 
-                         pieceIndex, peerId, data.length);
-                
-                // Cache the piece in memory for future requests
-                pieceMap.put(pieceIndex, data);
-                
-                // Update bitfield to reflect we have this piece
-                if (bitfield != null && !bitfield.get(pieceIndex)) {
-                    bitfield.set(pieceIndex);
-                    log.info("Updated bitfield for piece {} that was found on disk", pieceIndex);
-                }
-                
-                return data;
-            } else {
-                // If we're a seeder, try to generate the piece from the original file
-                Peer thisPeer = null;
-                try {
-                    thisPeer = new ArrayList<>(peers.values()).stream()
-                              .filter(p -> p.getPeerId().equals(peerId))
-                              .findFirst()
-                              .orElse(null);
-                } catch (Exception e) {
-                    // Ignore, we'll just proceed with null
-                }
-                
-                if (thisPeer != null && thisPeer.isHasFile()) {
-                    log.info("This peer is a seeder, generating piece {} from source file", pieceIndex);
-                    try {
-                        String sourceFilePath = config.getFileName();
-                        File sourceFile = new File(sourceFilePath);
-                        
-                        if (sourceFile.exists()) {
-                            try (RandomAccessFile raf = new RandomAccessFile(sourceFile, "r")) {
-                                int pieceSize = config.getPieceSize();
-                                long fileSize = raf.length();
-                                
-                                int currentPieceSize = (int) Math.min(pieceSize, fileSize - pieceIndex * pieceSize);
-                                byte[] newPiece = new byte[currentPieceSize];
-                                
-                                raf.seek(pieceIndex * pieceSize);
-                                raf.readFully(newPiece, 0, currentPieceSize);
-                                
-                                // Store piece in memory
-                                pieceMap.put(pieceIndex, newPiece);
-                                
-                                // Save piece to disk
-                                savePieceToDisk(peerId, pieceIndex, newPiece);
-                                
-                                // Update bitfield
-                                if (bitfield != null) {
-                                    bitfield.set(pieceIndex);
-                                }
-                                
-                                log.info("Generated piece {} from source file", pieceIndex);
-                                return newPiece;
-                            }
-                        }
-                    } catch (Exception e) {
-                        log.error("Failed to generate piece {} from source file", pieceIndex, e);
+                if (data.length > 0) {
+                    log.info("Loaded piece {} from disk for peer {}, size: {}", 
+                             pieceIndex, peerId, data.length);
+                    
+                    // Cache the piece in memory for future requests
+                    pieceMap.put(pieceIndex, data);
+                    
+                    // Update bitfield to reflect we have this piece
+                    if (bitfield != null && !bitfield.get(pieceIndex)) {
+                        bitfield.set(pieceIndex);
+                        log.info("Updated bitfield for piece {} that was found on disk", pieceIndex);
                     }
+                    
+                    return data;
+                } else {
+                    log.warn("Piece file exists but is empty for piece {}", pieceIndex);
                 }
-                
-                // Look for the piece in other peer directories
-                log.info("Piece {} not found in peer {}'s directory, searching in other peers", pieceIndex, peerId);
-                
-                // Try common peer IDs
-                String[] potentialPeers = {"1", "2", "3", "1001", "1002", "1003", "1004", "1005"};
-                
-                for (String otherPeerId : potentialPeers) {
+            }
+            
+            // Check if this peer should have the source file
+            Peer thisPeer = null;
+            try {
+                // Find current peer in the peers map
+                thisPeer = new ArrayList<>(peers.values()).stream()
+                          .filter(p -> p.getPeerId().equals(peerId))
+                          .findFirst()
+                          .orElse(null);
+            } catch (Exception e) {
+                log.warn("Error looking up peer {} in peers map", peerId, e);
+            }
+            
+            // If we're a seeder with the source file, generate the piece
+            boolean isSeeder = thisPeer != null && thisPeer.isHasFile();
+            String sourceFilePath = config.getFileName();
+            File sourceFile = new File(sourceFilePath);
+            
+            if (isSeeder && sourceFile.exists()) {
+                log.info("This peer is a seeder, generating piece {} from source file '{}'", pieceIndex, sourceFilePath);
+                try (RandomAccessFile raf = new RandomAccessFile(sourceFile, "r")) {
+                    int pieceSize = config.getPieceSize();
+                    long fileSize = raf.length();
+                    
+                    log.info("Source file size: {}, piece size: {}, total pieces: {}", 
+                             fileSize, pieceSize, totalPieces);
+                    
+                    // Ensure piece index is valid for the file size
+                    if (pieceIndex * pieceSize < fileSize) {
+                        int currentPieceSize = (int) Math.min(pieceSize, fileSize - pieceIndex * pieceSize);
+                        byte[] newPiece = new byte[currentPieceSize];
+                        
+                        raf.seek(pieceIndex * pieceSize);
+                        raf.readFully(newPiece, 0, currentPieceSize);
+                        
+                        log.info("Successfully read piece {} from source file, size: {}", 
+                                pieceIndex, currentPieceSize);
+                        
+                        // Store piece in memory
+                        pieceMap.put(pieceIndex, newPiece);
+                        
+                        // Save piece to disk
+                        savePieceToDisk(peerId, pieceIndex, newPiece);
+                        
+                        // Update bitfield
+                        if (bitfield != null) {
+                            bitfield.set(pieceIndex);
+                        }
+                        
+                        log.info("Generated piece {} from source file (size: {})", pieceIndex, currentPieceSize);
+                        return newPiece;
+                    } else {
+                        log.error("Piece index {} is beyond file size {} (piece size: {})", 
+                                 pieceIndex, fileSize, pieceSize);
+                    }
+                } catch (Exception e) {
+                    log.error("Failed to generate piece {} from source file: {}", pieceIndex, e.getMessage());
+                    e.printStackTrace(); // Add full stack trace for debugging
+                }
+            }
+            
+            // Look for the piece in other peer directories
+            log.info("Piece {} not found for peer {}, searching in other peers", pieceIndex, peerId);
+            
+            // Try to find it in any peer directory
+            File peersRoot = new File(".");
+            File[] peerDirs = peersRoot.listFiles(file -> 
+                file.isDirectory() && file.getName().startsWith("peer_"));
+            
+            if (peerDirs != null) {
+                for (File peerDir1 : peerDirs) {
+                    String otherPeerId = peerDir1.getName().substring("peer_".length());
                     if (otherPeerId.equals(peerId)) continue; // Skip current peer
                     
-                    String otherPiecePath = "peer_" + otherPeerId + "/piece_" + pieceIndex;
+                    String otherPiecePath = peerDir1.getPath() + "/piece_" + pieceIndex;
                     File otherPieceFile = new File(otherPiecePath);
                     
-                    if (otherPieceFile.exists()) {
+                    if (otherPieceFile.exists() && otherPieceFile.length() > 0) {
                         log.info("Found piece {} in peer {}'s directory, copying it", pieceIndex, otherPeerId);
                         try {
                             byte[] pieceData = Files.readAllBytes(otherPieceFile.toPath());
@@ -263,9 +408,45 @@ public class FileService {
                         }
                     }
                 }
-                
-                log.warn("Piece {} not found on disk for peer {} or any other peers", pieceIndex, peerId);
             }
+            
+            // Special handling for seeders - last resort, try to generate the piece even if we don't think we should have it
+            // This is a fallback when the bitfield communication has issues
+            if (sourceFile.exists()) {
+                log.warn("Last resort: Trying to generate piece {} from source file '{}' even though we're not marked as a seeder", 
+                        pieceIndex, sourceFilePath);
+                try (RandomAccessFile raf = new RandomAccessFile(sourceFile, "r")) {
+                    int pieceSize = config.getPieceSize();
+                    long fileSize = raf.length();
+                    
+                    if (pieceIndex * pieceSize < fileSize) {
+                        int currentPieceSize = (int) Math.min(pieceSize, fileSize - pieceIndex * pieceSize);
+                        byte[] newPiece = new byte[currentPieceSize];
+                        
+                        raf.seek(pieceIndex * pieceSize);
+                        raf.readFully(newPiece, 0, currentPieceSize);
+                        
+                        // Store piece in memory
+                        pieceMap.put(pieceIndex, newPiece);
+                        
+                        // Save piece to disk
+                        savePieceToDisk(peerId, pieceIndex, newPiece);
+                        
+                        // Update bitfield
+                        if (bitfield != null) {
+                            bitfield.set(pieceIndex);
+                        }
+                        
+                        log.info("Last resort: Generated piece {} from source file (size: {})", pieceIndex, currentPieceSize);
+                        return newPiece;
+                    }
+                } catch (Exception e) {
+                    // This is expected to fail if we're not a seeder, so log at debug level
+                    log.debug("Last resort attempt failed for piece {}", pieceIndex);
+                }
+            }
+            
+            log.warn("Piece {} not found on disk for peer {} or any other peers", pieceIndex, peerId);
         } catch (IOException e) {
             log.error("Failed to read piece {} from disk for peer {}", pieceIndex, peerId, e);
         }
@@ -360,7 +541,14 @@ public class FileService {
     
     public void setLocalPeerId(String peerId) {
         this.localPeerId = peerId;
-        log.info("FileService: Set local peer ID to {}", peerId);
+        log.info("PEER ID SET: FileService local peer ID is now {}", peerId);
+    }
+    
+    public String getLocalPeerId() {
+        if (localPeerId == null || localPeerId.isEmpty()) {
+            log.error("PEER ID ERROR: FileService local peer ID is null or empty!");
+        }
+        return localPeerId;
     }
     
     public void mergeFile(String peerId) {
