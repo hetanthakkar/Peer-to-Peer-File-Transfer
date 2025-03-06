@@ -116,4 +116,4 @@ p2p.pieceSize=100000
 - Enhanced security features
 - File integrity verification
 
-![Setup Screenshot](/Users/hetanthakkar/Desktop)
+![Setup Screenshot](https://i.postimg.cc/dtVykJBf/P2P.png)
