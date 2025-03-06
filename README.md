@@ -116,4 +116,4 @@ p2p.pieceSize=100000
 - Enhanced security features
 - File integrity verification
 
-![Live Demo](https://drive.google.com/file/d/1183EwV8wtO03aHmpgO1YF-Awkz-XJN7E/view?usp=sharing)
+[🎥 Setup Video Walkthrough](https://drive.google.com/file/d/1183EwV8wtO03aHmpgO1YF-Awkz-XJN7E/view?usp=sharing)
